@@ -8,21 +8,16 @@ use Closure;
 use Exception;
 use Filament\Forms\Components\Actions\Action;
 use Filament\Forms\Components\Concerns;
-use Filament\Forms\Components\Contracts;
+use Filament\Forms\Components\Contracts\CanBeLengthConstrained;
 use Filament\Forms\Components\Field;
-use Filament\Support\Concerns\HasExtraAlpineAttributes;
 
-class Geocomplete extends Field implements Contracts\CanBeLengthConstrained, Contracts\HasAffixActions
+class Geocomplete extends Field implements CanBeLengthConstrained
 {
-    use Concerns\CanBeAutocapitalized;
-    use Concerns\CanBeAutocompleted;
     use Concerns\CanBeLengthConstrained;
-    use Concerns\CanBeReadOnly;
     use Concerns\HasAffixes;
     use Concerns\HasExtraInputAttributes;
     use Concerns\HasInputMode;
     use Concerns\HasPlaceholder;
-    use HasExtraAlpineAttributes;
 
     protected string $view = 'filament-google-maps::fields.filament-google-geocomplete';
 
@@ -42,8 +37,6 @@ class Geocomplete extends Field implements Contracts\CanBeLengthConstrained, Con
 
     protected Closure|array $reverseGeocode = [];
 
-    protected ?Closure $reverseGeocodeUsing = null;
-
     protected Closure|bool $updateLatLng = false;
 
     protected Closure|array $types = [];
@@ -51,6 +44,8 @@ class Geocomplete extends Field implements Contracts\CanBeLengthConstrained, Con
     protected Closure|array $countries = [];
 
     protected Closure|bool $debug = false;
+
+    protected Closure|array|null $latLngAttributes = null;
 
     /**
      * DO NOT USE!  Only used by the Radius Filter, to set the state path for the filter form data.
@@ -70,15 +65,10 @@ class Geocomplete extends Field implements Contracts\CanBeLengthConstrained, Con
         $name = $this->evaluate($this->filterName);
 
         if ($name) {
-            return 'tableFilters.' . $name;
+            return 'tableFilters.'.$name;
         }
 
         return null;
-    }
-
-    public function getMapsUrl(): string
-    {
-        return MapsHelper::mapsUrl();
     }
 
     /**
@@ -102,7 +92,8 @@ class Geocomplete extends Field implements Contracts\CanBeLengthConstrained, Con
 
     /**
      * If set to true, will update lat and lng fields on the form when a place is selected from the dropdown.  Requires
-     * the getLatLngAttributes() method on the model, as per the filament-google-maps:model-code Artisan command.
+     * the getLatLngAttributes() method on the model, as per the filament-google-maps:model-code Artisan command
+     * or the usage latLngAttributes() method on the component
      *
      * @param  Closure|bool  $debug
      * @return $this
@@ -119,13 +110,39 @@ class Geocomplete extends Field implements Contracts\CanBeLengthConstrained, Con
         return $this->evaluate($this->updateLatLng);
     }
 
-    public function getUpdateLatLngFields(): array
+    /**
+     * Set the fields for latitude and longitude on the form.
+     * This method allows the user to specify which fields on the form should be
+     * updated with the latitude and longitude values when a place is selected
+     * from the dropdown.
+     *
+     * @return $this
+     */
+    public function latLngAttributes(Closure|array $latLngAttributes): static
+    {
+        $this->latLngAttributes = $latLngAttributes;
+
+        return $this;
+    }
+
+    public function getLatLngAttributes(): ?array
+    {
+        return $this->evaluate($this->latLngAttributes);
+    }
+
+    private function getUpdateLatLngFields(): array
     {
         $statePaths = [];
 
         if ($this->getUpdateLatLng()) {
-            /** @noinspection PhpUndefinedMethodInspection */
-            $fields = $this->getModel()::getLatLngAttributes();
+
+            $latLngAttributes = $this->getLatLngAttributes();
+            if (blank($latLngAttributes)) {
+                /** @noinspection PhpUndefinedMethodInspection */
+                $fields = $this->getModel()::getLatLngAttributes();
+            } else {
+                $fields = $latLngAttributes;
+            }
 
             foreach ($fields as $fieldKey => $field) {
                 $fieldId = FieldHelper::getFieldId($field, $this);
@@ -255,39 +272,6 @@ class Geocomplete extends Field implements Contracts\CanBeLengthConstrained, Con
     }
 
     /**
-     * As an alternative to the built-in symbol based reverse geocode handling, you may provide a closure which will be
-     * called with the 'results' array from the Google API response, and use a $set closure to update fields on the form.
-     *
-     * @return $this
-     */
-    public function reverseGeocodeUsing(?Closure $closure): static
-    {
-        $this->reverseGeocodeUsing = $closure;
-
-        return $this;
-    }
-
-    public function getReverseGeocodeUsing(): bool
-    {
-        return $this->reverseGeocodeUsing !== null;
-    }
-
-    public function reverseGeocodeUpdated(array $results): static
-    {
-        $callback = $this->reverseGeocodeUsing;
-
-        if (! $callback) {
-            return $this;
-        }
-
-        $this->evaluate($callback, [
-            'results' => $results,
-        ]);
-
-        return $this;
-    }
-
-    /**
      * And array of place types, see "Constrain Place Types" section of Google Places API doc:
      *
      * https://developers.google.com/maps/documentation/javascript/place-autocomplete
@@ -354,13 +338,13 @@ class Geocomplete extends Field implements Contracts\CanBeLengthConstrained, Con
         return $this->evaluate($this->placeField) ?? 'formatted_address';
     }
 
-    public function getGeolocateAction(): ?Action
+    public function getSuffixAction(): ?Action
     {
         if ($this->getGeolocate()) {
             return Action::make('geolocate')
                 ->iconButton()
                 ->icon($this->getGeolocateIcon())
-                ->extraAttributes(['id' => $this->getId() . '-geolocate']);
+                ->extraAttributes(['id' => $this->getId().'-geolocate']);
         }
 
         return null;
@@ -376,27 +360,32 @@ class Geocomplete extends Field implements Contracts\CanBeLengthConstrained, Con
                     $state = static::getLocationState($state);
 
                     if (! MapsHelper::isLocationEmpty($state)) {
-                        $state['formatted_address'] = MapsHelper::reverseGeocode($state);
+                        $state = MapsHelper::reverseGeocode($state);
                     } else {
-                        $state['formatted_address'] = '';
+                        $state = '';
                     }
                 } else {
-                    $state['formatted_address'] = '';
+                    $state = '';
                 }
 
-                $component->state($state);
+                $component->state((string) $state);
             }
         });
 
-        //        $this->afterStateUpdated(static function (Geocomplete $component, $state) {
-        //            if ($component->getIsLocation()) {
-        //                $component->state($state['formatted_address']);
-        //            }
-        //        });
+        $this->dehydrateStateUsing(static function (string|array|null $state, $record, $model, Geocomplete $component) {
+            //			if (!blank($state))
+            //			{
+            //				if ($component->getIsLocation())
+            //				{
+            //					if ($latLang = MapsHelper::geocode($state))
+            //					{
+            //						return $latLang;
+            //					}
+            //				}
+            //			}
 
-        $this->suffixActions([
-            Closure::fromCallable([$this, 'getGeolocateAction']),
-        ]);
+            return $state;
+        });
     }
 
     /**
@@ -409,13 +398,12 @@ class Geocomplete extends Field implements Contracts\CanBeLengthConstrained, Con
             'statePath'            => $this->getStatePath(),
             'isLocation'           => $this->getIsLocation(),
             'reverseGeocodeFields' => $this->getReverseGeocode(),
-            'reverseGeocodeUsing'  => $this->getReverseGeocodeUsing(),
             'latLngFields'         => $this->getUpdateLatLngFields(),
             'types'                => $this->getTypes(),
             'countries'            => $this->getCountries(),
             'placeField'           => $this->getPlaceField(),
             'debug'                => $this->getDebug(),
-            'gmaps'                => $this->getMapsUrl(),
+            'gmaps'                => MapsHelper::mapsUrl(),
         ]);
 
         //ray($config);
@@ -439,21 +427,27 @@ class Geocomplete extends Field implements Contracts\CanBeLengthConstrained, Con
         }
     }
 
-    public function getState(): mixed
+    public function geoHasJs(): bool
     {
-        $state = parent::getState();
-
-        return $state;
+        return true;
     }
 
-    public function getFormattedState(): string
+    public function geoJsUrl(): string
     {
-        $state = $this->getState();
+        $manifest = json_decode(file_get_contents(__DIR__.'/../../dist/mix-manifest.json'), true);
 
-        if ($this->getIsLocation()) {
-            return $state['formatted_address'];
-        }
+        return url($manifest['/cheesegrits/filament-google-maps/filament-google-geocomplete.js']);
+    }
 
-        return $state;
+    public function geoHasCss(): bool
+    {
+        return false;
+    }
+
+    public function geoCssUrl(): string
+    {
+        $manifest = json_decode(file_get_contents(__DIR__.'/../../dist/mix-manifest.json'), true);
+
+        return url($manifest['/cheesegrits/filament-google-maps/filament-google-geocomplete.css']);
     }
 }
